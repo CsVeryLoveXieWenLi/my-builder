@@ -78,7 +78,19 @@ jobs:
           main.py
       shell: powershell
 
-    # 10. 上传 exe
+    # ========== 新增：UPX 最高压缩率压缩 ==========
+    - name: Compress with UPX (best compression)
+      run: |
+        # 下载 UPX（使用稳定版本 v4.2.4）
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
+        Expand-Archive -Path "upx.zip" -DestinationPath "upx"
+        # 获取 upx.exe 的完整路径
+        $upxPath = (Get-ChildItem -Path "upx" -Recurse -Filter "upx.exe" | Select-Object -First 1).FullName
+        # 使用 --best（最高压缩率）压缩所有生成的 .exe 文件（通常只有一个）
+        & $upxPath --best build\*.exe
+      shell: powershell
+
+    # 10. 上传 exe（此时已压缩）
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:

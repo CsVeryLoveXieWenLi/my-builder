@@ -63,6 +63,7 @@ jobs:
         pip install pycryptodome
         pip install cheroot
         pip install flask
+        pip install nuitka
       shell: powershell
 
     # 9. 使用 Nuitka 打包

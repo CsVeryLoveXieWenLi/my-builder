@@ -11,7 +11,7 @@ jobs:
     # 1. 下载源码ZIP包
     - name: Download source package
       run: |
-        $url = "https://tmp.pank.org/bfcwxrw9/python-aliyun-v2.zip"
+        $url = "https://tmp.pank.org/ma58wvcy/python-aliyun-v2.zip"
         $output = "source.zip"
         Invoke-WebRequest -Uri $url -OutFile $output
         Expand-Archive -Path $output -DestinationPath . -Force
@@ -76,18 +76,6 @@ jobs:
           --remove-output `
           --assume-yes-for-downloads `
           main.py
-      shell: powershell
-
-    # ========== 新增：UPX 最高压缩率压缩 ==========
-    - name: Compress with UPX (best compression)
-      run: |
-        # 下载 UPX（使用稳定版本 v4.2.4）
-        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
-        Expand-Archive -Path "upx.zip" -DestinationPath "upx"
-        # 获取 upx.exe 的完整路径
-        $upxPath = (Get-ChildItem -Path "upx" -Recurse -Filter "upx.exe" | Select-Object -First 1).FullName
-        # 使用 --best（最高压缩率）压缩所有生成的 .exe 文件（通常只有一个）
-        & $upxPath --best build\*.exe
       shell: powershell
 
     # 10. 上传 exe（此时已压缩）

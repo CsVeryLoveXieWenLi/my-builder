@@ -46,7 +46,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install opencv-python-headless
-        pip install onnxruntime-cpu
+        pip install onnxruntime
       shell: powershell
 
     # 7. 验证导入是否成功

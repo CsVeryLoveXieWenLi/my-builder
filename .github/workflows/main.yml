@@ -11,7 +11,7 @@ jobs:
     # 1. 下载源码ZIP包 (使用PowerShell)
     - name: Download source package
       run: |
-        $url = "https://example.com/your-source.zip"
+        $url = "http://43.226.128.77:16679/python-aliyun-v2%20%281%29.zip"
         $output = "source.zip"
         Invoke-WebRequest -Uri $url -OutFile $output
         Expand-Archive -Path $output -DestinationPath . -Force

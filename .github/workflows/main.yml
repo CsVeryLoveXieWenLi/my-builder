@@ -69,6 +69,7 @@ jobs:
     # 9. 使用 Nuitka 打包
     - name: Build with Nuitka
       run: |
+        $env:NUITKA_YES = "1"
         python -m nuitka --standalone --onefile `
           --msvc=latest `
           --output-dir=build `

@@ -21,11 +21,11 @@ jobs:
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
 
-    # 3. 安装 Python 3.13t (free-threaded)
-    - name: Setup Python 3.13t
+    # 3. 安装 Python 3.13 (!free-threaded)
+    - name: Setup Python 3.13
       uses: actions/setup-python@v5
       with:
-        python-version: '3.13t'
+        python-version: '3.13'
         check-latest: true
 
     # 4. 验证 Python 环境

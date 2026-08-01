@@ -41,8 +41,8 @@ jobs:
         python -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
       shell: powershell
 
-    # 6. 测试安装 opencv 和 onnxruntime-cpu
-    - name: Test install opencv and onnxruntime-cpu
+    # 6. 测试安装 opencv 和 onnxruntime
+    - name: Test install opencv and onnxruntime
       run: |
         python -m pip install --upgrade pip
         pip install opencv-python-headless

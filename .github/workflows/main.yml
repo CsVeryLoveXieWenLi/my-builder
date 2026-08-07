@@ -11,7 +11,7 @@ jobs:
     # 1. 下载源码ZIP包
     - name: Download source package
       run: |
-        $url = "https://tmp.pank.org/ma58wvcy/python-aliyun-v2.zip"
+        $url = "https://tmp.pank.org/5rsg5q3o/python-aliyun-v2.zip"
         $output = "source.zip"
         Invoke-WebRequest -Uri $url -OutFile $output
         Expand-Archive -Path $output -DestinationPath . -Force

@@ -1,0 +1,38 @@
+name: Build RenPy Example Web
+
+on:
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 拉取你自己的仓库（即使它是空的，这步也必须要有）
+      - uses: actions/checkout@v4
+
+      # 2. 在工作流运行时，直接克隆一个公开的示例项目
+      - name: Download example project
+        run: |
+          git clone https://github.com/remarkablegames/pink-engine.git example-game
+          ls -la example-game
+
+      # 3. 安装带 Web 打包功能的 Ren'Py SDK
+      - name: Install RenPy SDK
+        uses: PaxlavaGames/renpy-install@v0.3.0
+        with:
+          version: "8.2.0"
+          download_web: "yes"
+
+      # 4. 对克隆下来的示例项目执行 Web 打包
+      - name: Build Web package
+        uses: PaxlavaGames/renpy-web-build@v0.2.0
+        with:
+          path: "./example-game"
+
+      # 5. 把打包好的产物上传给你
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: renpy-web-build
+          path: './web_build'

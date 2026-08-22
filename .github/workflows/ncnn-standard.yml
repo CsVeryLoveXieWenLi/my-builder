@@ -1,0 +1,176 @@
+name: Build NCNN (Standard)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0' # 每周自动检测编译
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows 2019 Matrix
+          - name: win2019-mingw64
+            os: windows-2019
+            compiler: mingw
+            crt: none
+            arch: x64
+          - name: win2019-msvc2019-md
+            os: windows-2019
+            compiler: msvc
+            crt: md
+            arch: x64
+          - name: win2019-msvc2019-mt
+            os: windows-2019
+            compiler: msvc
+            crt: mt
+            arch: x64
+
+          # Windows 2022 Matrix
+          - name: win2022-mingw64
+            os: windows-2022
+            compiler: mingw
+            crt: none
+            arch: x64
+          - name: win2022-msvc2022-md
+            os: windows-2022
+            compiler: msvc
+            crt: md
+            arch: x64
+          - name: win2022-msvc2022-mt
+            os: windows-2022
+            compiler: msvc
+            crt: mt
+            arch: x64
+
+          # Linux Ubuntu 24.04 Matrix
+          - name: ubuntu2404-gcc
+            os: ubuntu-24.04
+            compiler: gcc
+            crt: none
+            arch: x64
+          - name: ubuntu2404-musl
+            os: ubuntu-24.04
+            compiler: musl
+            crt: none
+            arch: x64
+
+    steps:
+      - name: Fetch Latest NCNN Tag
+        shell: bash
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/tencent/ncnn/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$TAG" ]; then
+            TAG="20240410" # 保底版本号
+          fi
+          echo "NCNN_TAG=${TAG}" >> $GITHUB_ENV
+          echo "Fetching source code for tag: ${TAG}"
+          git clone --depth 1 --branch ${TAG} https://github.com/tencent/ncnn.git ncnn-src
+
+      - name: Setup MinGW (Windows)
+        if: matrix.compiler == 'mingw'
+        uses: egor-trefilov/setup-mingw@v2
+        with:
+          platform: x64
+
+      - name: Setup Musl Toolchain (Linux Musl)
+        if: matrix.compiler == 'musl'
+        run: |
+          mkdir -p /home/runner/toolchain
+          wget https://github.com/cross-tools/musl-cross/releases/download/20260515/x86_64-unknown-linux-musl.tar.xz -O /tmp/musl.tar.xz || \
+          wget https://github.com/cross-tools/musl-cross/releases/latest/download/x86_64-unknown-linux-musl.tar.xz -O /tmp/musl.tar.xz
+          tar -xf /tmp/musl.tar.xz -C /home/runner/toolchain
+          
+          # 动态写入 Toolchain 文件
+          cat << 'EOF' > ${{ github.workspace }}/musl.cmake
+          set(CMAKE_SYSTEM_NAME Linux)
+          set(CMAKE_SYSTEM_PROCESSOR x86_64)
+          set(MUSL_PATH "/home/runner/toolchain/x86_64-unknown-linux-musl")
+          set(CMAKE_C_COMPILER "${MUSL_PATH}/bin/x86_64-unknown-linux-musl-gcc")
+          set(CMAKE_CXX_COMPILER "${MUSL_PATH}/bin/x86_64-unknown-linux-musl-g++")
+          set(CMAKE_ASM_COMPILER "${MUSL_PATH}/bin/x86_64-unknown-linux-musl-gcc")
+          set(CMAKE_AR "${MUSL_PATH}/bin/x86_64-unknown-linux-musl-ar" CACHE FILEPATH "Archiver")
+          set(CMAKE_NM "${MUSL_PATH}/bin/x86_64-unknown-linux-musl-nm")
+          set(CMAKE_RANLIB "${MUSL_PATH}/bin/x86_64-unknown-linux-musl-ranlib" CACHE FILEPATH "Ranlib")
+          set(CMAKE_STRIP "${MUSL_PATH}/bin/x86_64-unknown-linux-musl-strip")
+          set(CMAKE_FIND_ROOT_PATH "${MUSL_PATH}")
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+          set(CMAKE_EXE_LINKER_FLAGS "-static" CACHE STRING "Static linking force")
+          set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+          link_libraries("-static-libgcc" "-static-libstdc++")
+          EOF
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          INSTALL_DIR="${{ github.workspace }}/install_dir"
+          BUILD_DIR="${{ github.workspace }}/build"
+          
+          CMAKE_FLAGS=(
+            "-DCMAKE_BUILD_TYPE=Release"
+            "-DCMAKE_INSTALL_PREFIX=${INSTALL_DIR}"
+            "-DNCNN_BUILD_SHARED_LIBS=OFF"
+            "-DNCNN_BF16=OFF"
+            "-DNCNN_INT8=OFF"
+            "-DNCNN_BUILD_TOOLS=OFF"
+            "-DNCNN_BUILD_EXAMPLES=OFF"
+            "-DNCNN_BUILD_TESTS=OFF"
+            "-DNCNN_VULKAN=OFF"
+            "-DNCNN_PIXEL_DRAWING=OFF"
+            "-DNCNN_PIXEL_ROTATE=OFF"
+            "-DNCNN_PIXEL_AFFINE=OFF"
+            "-DNCNN_OPENMP=ON"
+          )
+
+          if [ "${{ matrix.compiler }}" == "msvc" ]; then
+            if [ "${{ matrix.crt }}" == "mt" ]; then
+              CMAKE_FLAGS+=("-DNCNN_BUILD_WITH_STATIC_CRT=ON" "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded")
+            else
+              CMAKE_FLAGS+=("-DNCNN_BUILD_WITH_STATIC_CRT=OFF" "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL")
+            fi
+          elif [ "${{ matrix.compiler }}" == "mingw" ]; then
+            CMAKE_FLAGS+=("-G" "MinGW Makefiles")
+          elif [ "${{ matrix.compiler }}" == "musl" ]; then
+            CMAKE_FLAGS+=("-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/musl.cmake")
+          fi
+
+          cmake -S ncnn-src -B "${BUILD_DIR}" "${CMAKE_FLAGS[@]}"
+
+      - name: Build and Install
+        shell: bash
+        run: |
+          cmake --build ${{ github.workspace }}/build --config Release -j$(nproc 2>/dev/null || echo 4)
+          cmake --install ${{ github.workspace }}/build --config Release
+
+      - name: Normalize & Package Artifacts
+        shell: bash
+        run: |
+          INSTALL_DIR="${{ github.workspace }}/install_dir"
+          
+          # 补充与标准化包含目录 bin, include, lib, share, etc
+          mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/include" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/share" "${INSTALL_DIR}/etc"
+          
+          PKG_NAME="ncnn-${{ env.NCNN_TAG }}-${{ matrix.name }}"
+          
+          if [[ "${{ matrix.os }}" == windows* ]]; then
+            cd "${INSTALL_DIR}" && zip -r "${{ github.workspace }}/${PKG_NAME}.zip" .
+            echo "PKG_PATH=${{ github.workspace }}/${PKG_NAME}.zip" >> $GITHUB_ENV
+          else
+            cd "${INSTALL_DIR}" && tar -czvf "${{ github.workspace }}/${PKG_NAME}.tar.gz" .
+            echo "PKG_PATH=${{ github.workspace }}/${PKG_NAME}.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "ncnn-${{ env.NCNN_TAG }}-static"
+          files: ${{ env.PKG_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

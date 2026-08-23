@@ -1,0 +1,111 @@
+name: Build Hermes (MSVC)
+
+on:
+  workflow_dispatch:
+    inputs:
+      crt_type:
+        description: 'MSVC Runtime Library (CRT)'
+        required: true
+        type: choice
+        default: 'MT'
+        options:
+          - 'MT'
+          - 'MD'
+      build_type:
+        description: 'Build Configuration'
+        required: true
+        type: choice
+        default: 'Release'
+        options:
+          - 'Release'
+          - 'Debug'
+          - 'RelWithDebInfo'
+          - 'MinSizeRel'
+
+jobs:
+  build-msvc:
+    name: Build Hermes on Windows (MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Fetch Latest Hermes Release Tag
+        id: get_tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 自动获取 facebook/hermes 仓库最新的 Release Tag
+          try {
+            $tag = gh api repos/facebook/hermes/releases/latest --jq .tag_name
+          } catch {
+            $tag = ""
+          }
+          if (-not $tag) {
+            Write-Host "Latest release tag not found via API, falling back to tags list..."
+            $tag = (gh api repos/facebook/hermes/tags --jq '.[0].name')
+          }
+          if (-not $tag) {
+            $tag = "main"
+          }
+          Write-Host "Target Hermes Tag: $tag"
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout Hermes Source Code
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/hermes
+          ref: ${{ steps.get_tag.outputs.tag }}
+          path: hermes
+
+      - name: Configure CRT and Build Parameters
+        id: cmake_config
+        shell: pwsh
+        run: |
+          $crt = "${{ inputs.crt_type }}"
+          $buildType = "${{ inputs.build_type }}"
+
+          # 映射 MT/MD 选择到现代 CMake (3.15+) 的 CMAKE_MSVC_RUNTIME_LIBRARY 变量
+          if ($crt -eq "MT") {
+            if ($buildType -eq "Debug") {
+              $msvcRuntime = "MultiThreadedDebug"
+            } else {
+              $msvcRuntime = "MultiThreaded"
+            }
+          } else {
+            if ($buildType -eq "Debug") {
+              $msvcRuntime = "MultiThreadedDebugDLL"
+            } else {
+              $msvcRuntime = "MultiThreadedDLL"
+            }
+          }
+
+          Write-Host "Configured CMAKE_MSVC_RUNTIME_LIBRARY: $msvcRuntime"
+          echo "msvc_runtime=$msvcRuntime" >> $env:GITHUB_OUTPUT
+
+      - name: CMake Configure
+        shell: pwsh
+        run: |
+          # 按照官方推荐使用 CMake 生成 Visual Studio 2022 (MSVC x64) 工程
+          cmake -B hermes/build -S hermes `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=${{ steps.cmake_config.outputs.msvc_runtime }} `
+            -DCMAKE_INSTALL_PREFIX=hermes-dist
+
+      - name: CMake Build
+        shell: pwsh
+        run: |
+          cmake --build hermes/build --config ${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Staging Artifacts (Install)
+        shell: pwsh
+        run: |
+          # 将编译产物（Lib/DLL/Exe/Header）归集到 hermes-dist 目录
+          cmake --install hermes/build --config ${{ inputs.build_type }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-${{ steps.get_tag.outputs.tag }}-MSVC-${{ inputs.crt_type }}-${{ inputs.build_type }}-x64
+          path: hermes-dist/
+          if-no-files-found: error

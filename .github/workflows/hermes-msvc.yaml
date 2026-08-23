@@ -1,4 +1,4 @@
-name: Build Hermes (Windows)
+name: Build Hermes (Windows with ClangCL)
 
 on:
   workflow_dispatch:
@@ -31,7 +31,6 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      # 1. 获取最新 release tag（在 checkout 之前）
       - name: Get latest release tag
         id: latest_release
         shell: bash
@@ -39,7 +38,6 @@ jobs:
           tag=$(curl -s https://api.github.com/repos/facebook/hermes/releases/latest | jq -r .tag_name)
           echo "tag_name=$tag" >> $GITHUB_OUTPUT
 
-      # 2. 检出 Hermes 源码到 hermes/ 子目录
       - name: Checkout Hermes source
         uses: actions/checkout@v4
         with:
@@ -47,20 +45,18 @@ jobs:
           ref: ${{ steps.latest_release.outputs.tag_name }}
           path: hermes
 
-      # 3. 配置 Visual Studio 环境（x64）
-      - name: Setup Visual Studio
+      - name: Setup Visual Studio (with ClangCL support)
         uses: egor-tensin/vs-shell@v2
         with:
           arch: x64
 
-      # 4. 清理旧构建目录 + CMake 配置（极简 + 修复 MSVC 编译问题）
-      - name: Configure CMake
+      - name: Configure CMake (using ClangCL)
         shell: bash
         run: |
-          # 强制清理缓存，避免旧配置残留
+          # 彻底清理旧构建目录
           rm -rf ./build
 
-          # 根据 runtime 和 configuration 计算 MSVC_RUNTIME_LIBRARY
+          # 计算运行时库类型
           if [[ "${{ github.event.inputs.configuration }}" == "Release" ]]; then
             if [[ "${{ github.event.inputs.runtime }}" == "MT" ]]; then
               RUNTIME="MultiThreaded"
@@ -75,32 +71,29 @@ jobs:
             fi
           fi
 
-          # 决定是否生成动态库
+          # 动态/静态库
           if [[ "${{ github.event.inputs.library_type }}" == "Shared" ]]; then
             SHARED="ON"
           else
             SHARED="OFF"
           fi
 
-          # CMake 配置
+          # 关键：使用 ClangCL 工具链
           cmake -S ./hermes -B ./build \
-            -G "Visual Studio 17 2022" -A x64 \
+            -G "Visual Studio 17 2022" -A x64 -T ClangCL \
             -DCMAKE_BUILD_TYPE=${{ github.event.inputs.configuration }} \
             -DCMAKE_MSVC_RUNTIME_LIBRARY="$RUNTIME" \
             -DBUILD_SHARED_LIBS="$SHARED" \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-            -DHERMESVM_COMPRESSED_POINTERS=OFF \
             -DHERMES_ENABLE_DEBUGGER=OFF \
             -DHERMES_ENABLE_INTL=OFF \
             -DHERMES_ENABLE_PROFILER=OFF \
             -DHERMES_ENABLE_LIBFUZZER=OFF
 
-      # 5. 编译（并行）
       - name: Build Hermes
         run: cmake --build ./build --config ${{ github.event.inputs.configuration }} --parallel
 
-      # 6. 上传制品
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

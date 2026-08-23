@@ -7,8 +7,8 @@ on:
         description: 'MSVC Runtime Library'
         type: choice
         options:
-          - MT  # 静态链接运行时 (/MT, /MTd)
-          - MD  # 动态链接运行时 (/MD, /MDd)
+          - MT
+          - MD
         default: 'MT'
       configuration:
         description: 'Build Configuration'
@@ -17,7 +17,6 @@ on:
           - Release
           - Debug
         default: 'Release'
-        # Release → /MT 或 /MD，Debug → /MTd 或 /MDd
       library_type:
         description: 'Library Type'
         type: choice
@@ -32,13 +31,7 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - name: Checkout Hermes
-        uses: actions/checkout@v4
-        with:
-          repository: facebook/hermes
-          # 获取最新 release tag
-          ref: ${{ steps.latest_release.outputs.tag_name }}
-
+      # 1. 先获取最新的 release tag（不需要克隆代码）
       - name: Get latest release tag
         id: latest_release
         shell: bash
@@ -46,17 +39,25 @@ jobs:
           tag=$(curl -s https://api.github.com/repos/facebook/hermes/releases/latest | jq -r .tag_name)
           echo "tag_name=$tag" >> $GITHUB_OUTPUT
 
+      # 2. 用获取到的 tag 检出 Hermes 源码到 hermes/ 子目录
+      - name: Checkout Hermes source
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/hermes
+          ref: ${{ steps.latest_release.outputs.tag_name }}
+          path: hermes   # 关键：防止覆盖工作目录
+
+      # 3. 配置 Visual Studio 环境
       - name: Setup Visual Studio
         uses: egor-tensin/vs-shell@v2
         with:
           arch: x64
 
+      # 4. CMake 配置（极简编译，全部参考官方参数）
       - name: Configure CMake
         shell: bash
         run: |
-          # 根据 configuration 和 runtime 组合确定 MSVC_RUNTIME_LIBRARY 值
-          # Release + MT → MultiThreaded, Debug + MT → MultiThreadedDebug
-          # Release + MD → MultiThreadedDLL, Debug + MD → MultiThreadedDebugDLL
+          # 根据 runtime 和 configuration 计算 MSVC_RUNTIME_LIBRARY 值
           if [[ "${{ github.event.inputs.configuration }}" == "Release" ]]; then
             if [[ "${{ github.event.inputs.runtime }}" == "MT" ]]; then
               RUNTIME="MultiThreaded"
@@ -71,35 +72,33 @@ jobs:
             fi
           fi
 
-          # BUILD_SHARED_LIBS: ON → Shared, OFF → Static
+          # 决定是否生成动态库
           if [[ "${{ github.event.inputs.library_type }}" == "Shared" ]]; then
-            SHARED_LIBS="ON"
+            SHARED="ON"
           else
-            SHARED_LIBS="OFF"
+            SHARED="OFF"
           fi
 
-          # 极简编译选项：关闭非必要功能以减小体积和加快编译
-          # - HERMES_ENABLE_DEBUGGER=OFF：关闭调试器支持[reference:0]
-          # - HERMES_ENABLE_INTL=OFF：关闭国际化支持，减少体积[reference:1]
-          # - HERMES_ENABLE_PROFILER=OFF：关闭性能分析器[reference:2]
-          # - HERMES_ENABLE_LIBFUZZER=OFF：关闭模糊测试[reference:3]
-          cmake -S hermes -B build \
+          # 极简编译：关闭调试器、国际化、分析器、模糊测试（都是官方 CMake 选项）
+          cmake -S ./hermes -B ./build \
             -G "Visual Studio 17 2022" -A x64 \
             -DCMAKE_BUILD_TYPE=${{ github.event.inputs.configuration }} \
             -DCMAKE_MSVC_RUNTIME_LIBRARY="$RUNTIME" \
-            -DBUILD_SHARED_LIBS="$SHARED_LIBS" \
+            -DBUILD_SHARED_LIBS="$SHARED" \
             -DHERMES_ENABLE_DEBUGGER=OFF \
             -DHERMES_ENABLE_INTL=OFF \
             -DHERMES_ENABLE_PROFILER=OFF \
             -DHERMES_ENABLE_LIBFUZZER=OFF
 
+      # 5. 编译（多核并行）
       - name: Build Hermes
         run: cmake --build ./build --config ${{ github.event.inputs.configuration }} --parallel
 
+      # 6. 上传制品
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-windows-${{ github.event.inputs.configuration }}-${{ github.event.inputs.runtime }}-${{ github.event.inputs.library_type }}
+          name: hermes-${{ github.event.inputs.configuration }}-${{ github.event.inputs.runtime }}-${{ github.event.inputs.library_type }}
           path: |
             build/bin/*.exe
             build/*.lib

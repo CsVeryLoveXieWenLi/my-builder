@@ -1,0 +1,87 @@
+name: Build PrimJS (Windows MSVC)
+
+on:
+  workflow_dispatch:
+    inputs:
+      crt_type:
+        description: '选择 C++ 运行时库 (CRT Type)'
+        required: true
+        default: 'MT'
+        type: choice
+        options:
+          - 'MT'
+          - 'MD'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Fetch Latest PrimJS Release Source
+        shell: pwsh
+        run: |
+          # 替换为您实际的仓库名称 (例如 lynx-dev/primjs)
+          $REPO = "lynx-dev/primjs"
+          
+          Write-Host "Fetching latest release information for $REPO..."
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest"
+          $zipUrl = $release.zipball_url
+          $tagName = $release.tag_name
+          
+          Write-Host "Latest Release Tag: $tagName"
+          Write-Host "Downloading source from: $zipUrl"
+          
+          Invoke-WebRequest -Uri $zipUrl -OutFile "primjs-src.zip"
+          Expand-Archive -Path "primjs-src.zip" -DestinationPath "primjs-temp"
+          
+          # 解压出来的子目录名称包含 Commit Hash，将其统一整理至 src 文件夹
+          $extractedDir = Get-ChildItem -Path "primjs-temp" | Select-Object -First 1
+          Move-Item -Path "$($extractedDir.FullName)\*" -Destination "src" -Force
+          Remove-Item -Path "primjs-temp", "primjs-src.zip" -Recurse -Force
+          
+          # 存入环境变量供后续步骤使用
+          echo "RELEASE_TAG=$tagName" >> $env:GITHUB_ENV
+
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup Ninja
+        uses: xmake-io/github-action-setup-ninja@v1
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $crtChoice = "${{ github.event.inputs.crt_type }}"
+          
+          # CMake 3.15+ 使用 CMAKE_MSVC_RUNTIME_LIBRARY 控制 MT / MD
+          if ($crtChoice -eq "MT") {
+            $msvcCrt = "MultiThreaded$<$<CONFIG:Release>:>"
+          } else {
+            $msvcCrt = "MultiThreadedDLL$<$<CONFIG:Release>:>"
+          }
+
+          Write-Host "Building with MSVC CRT: $msvcCrt"
+          
+          cmake -B build -S src `
+            -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=$msvcCrt
+
+      - name: Build PrimJS
+        shell: pwsh
+        run: |
+          cmake --build build --config Release
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: primjs-${{ env.RELEASE_TAG }}-windows-x64-${{ github.event.inputs.crt_type }}
+          path: |
+            build/*.exe
+            build/*.dll
+            build/*.lib
+            build/Release/*.exe
+            build/Release/*.dll
+            build/Release/*.lib

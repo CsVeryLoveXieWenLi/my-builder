@@ -3,10 +3,6 @@ name: Build PrimJS (Windows MSVC)
 on:
   workflow_dispatch:
     inputs:
-      repo:
-        description: 'PrimJS 仓库路径 (owner/repo)'
-        required: true
-        default: 'lynx-dev/primjs'
       crt_type:
         description: '选择 C++ 运行时库 (CRT Type)'
         required: true
@@ -21,67 +17,65 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Fetch Latest PrimJS Release Source
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGET_REPO: ${{ github.event.inputs.repo }}
+      # 1. 克隆 PrimJS 仓库
+      - name: Checkout PrimJS
+        uses: actions/checkout@v4
+        with:
+          repository: 'lynx-family/primjs'
+          fetch-depth: 0
+
+      # 2. 自动切换到最新的 Release / Tag (若无则保留在主分支)
+      - name: Checkout Latest Tag
+        shell: bash
         run: |
-          Write-Host "Fetching latest release from $env:TARGET_REPO using GitHub CLI..."
-          
-          # 1. 获取最新 Release 的 Tag 名称
-          $tagName = gh release view --repo $env:TARGET_REPO --json tagName --jq .tagName
-          if (-not $tagName) {
-            Write-Error "Failed to fetch latest release tag. Please check if the repository exists and has a release."
-            exit 1
-          }
-          Write-Host "Latest Release Tag: $tagName"
-          
-          # 2. 下载源码 Zip 包
-          gh release download $tagName --repo $env:TARGET_REPO --archive=zip --output "primjs-src.zip"
-          
-          # 3. 解压并整理源码至 src 目录
-          Expand-Archive -Path "primjs-src.zip" -DestinationPath "primjs-temp"
-          $extractedDir = Get-ChildItem -Path "primjs-temp" | Where-Object { $_.PSIsContainer } | Select-Object -First 1
-          
-          New-Item -ItemType Directory -Path "src" -Force
-          Move-Item -Path "$($extractedDir.FullName)\*" -Destination "src" -Force
-          Remove-Item -Path "primjs-temp", "primjs-src.zip" -Recurse -Force
-          
-          # 4. 写入环境变量供后续 Step 读取
-          "RELEASE_TAG=$tagName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            echo "Checking out latest tag: $LATEST_TAG"
+            git checkout "$LATEST_TAG"
+            echo "RELEASE_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          else
+            echo "No tag found, building default branch."
+            echo "RELEASE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          fi
 
-      - name: Configure CMake
-        shell: pwsh
+      # 3. 初始化 Windows MSVC (x64) 编译环境
+      - name: Setup MSVC Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # 4. 载入环境脚本并运行 hab 同步依赖项
+      - name: Sync Dependencies with hab
+        shell: bash
         run: |
-          $crtChoice = "${{ github.event.inputs.crt_type }}"
-          
-          # MT 映射为 MultiThreaded，MD 映射为 MultiThreadedDLL
-          if ($crtChoice -eq "MT") {
-            $msvcCrt = "MultiThreaded"
-          } else {
-            $msvcCrt = "MultiThreadedDLL"
-          }
+          source tools/envsetup.sh
+          hab sync .
 
-          Write-Host "Configuring CMake with MSVC Runtime: $msvcCrt"
-          
-          # 直接使用 Windows Runner 内置的 Visual Studio 2022 生成器 (无需额外配置 Ninja)
-          cmake -B build -S src `
-            -G "Visual Studio 17 2022" `
-            -A x64 `
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=$msvcCrt
-
-      - name: Build PrimJS
-        shell: pwsh
+      # 5. GN 生成构建配置 (配置 Release 参数及 MSVC CRT 标记)
+      - name: Generate Build Files (GN)
+        shell: bash
         run: |
-          cmake --build build --config Release
+          source tools/envsetup.sh
+          
+          CRT_FLAG="/${{ github.event.inputs.crt_type }}"
+          
+          # 设置 Release 构建 (is_debug=false) 并透传 MT/MD 编译参数
+          gn gen out/Release --args="is_debug=false target_cpu=\"x64\" extra_cflags=\"$CRT_FLAG\" extra_cppflags=\"$CRT_FLAG\""
 
+      # 6. 使用 Ninja 编译主二进制可执行文件 qjs
+      - name: Build qjs_exe (Ninja)
+        shell: bash
+        run: |
+          source tools/envsetup.sh
+          ninja -C out/Release qjs_exe
+
+      # 7. 打包产物上传
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: primjs-${{ env.RELEASE_TAG }}-windows-x64-${{ github.event.inputs.crt_type }}
           path: |
-            build/**/*.exe
-            build/**/*.dll
-            build/**/*.lib
+            out/Release/qjs.exe
+            out/Release/*.dll
+            out/Release/*.lib
           if-no-files-found: warn

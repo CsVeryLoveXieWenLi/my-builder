@@ -1,126 +1,108 @@
-name: Build Hermes (MSVC)
+name: Build Hermes (Windows)
 
 on:
   workflow_dispatch:
     inputs:
-      crt_type:
-        description: 'MSVC Runtime Library (CRT)'
-        required: true
+      runtime:
+        description: 'MSVC Runtime Library'
         type: choice
+        options:
+          - MT  # 静态链接运行时 (/MT, /MTd)
+          - MD  # 动态链接运行时 (/MD, /MDd)
         default: 'MT'
-        options:
-          - 'MT'
-          - 'MD'
-      build_type:
+      configuration:
         description: 'Build Configuration'
-        required: true
         type: choice
-        default: 'Release'
         options:
-          - 'Release'
-          - 'Debug'
-          - 'RelWithDebInfo'
-          - 'MinSizeRel'
+          - Release
+          - Debug
+        default: 'Release'
+        # Release → /MT 或 /MD，Debug → /MTd 或 /MDd
+      library_type:
+        description: 'Library Type'
+        type: choice
+        options:
+          - Static
+          - Shared
+        default: 'Static'
 
 jobs:
-  build-msvc:
-    name: Build Hermes on Windows (MSVC)
-    runs-on: windows-latest
+  build:
+    name: Build Hermes
+    runs-on: windows-2022
 
     steps:
-      # 1. 初始化 MSVC (cl.exe) 编译环境
-      - name: Setup MSVC Developer Command Prompt
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      # 2. 锁定 CMake 版本为 3.29.x，防止 3.30+ 报 CMP0026 致命错误
-      - name: Setup CMake
-        uses: jwlawson/actions-setup-cmake@v2
-        with:
-          cmake-version: '3.29.x'
-
-      # 3. 获取最新 Hermes Release Tag
-      - name: Fetch Latest Hermes Release Tag
-        id: get_tag
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          try {
-            $tag = gh api repos/facebook/hermes/releases/latest --jq .tag_name
-          } catch {
-            $tag = ""
-          }
-          if (-not $tag) {
-            Write-Host "Latest release tag not found via API, falling back to tags list..."
-            $tag = (gh api repos/facebook/hermes/tags --jq '.[0].name')
-          }
-          if (-not $tag) {
-            $tag = "main"
-          }
-          Write-Host "Target Hermes Tag: $tag"
-          echo "tag=$tag" >> $env:GITHUB_OUTPUT
-
-      # 4. Checkout Hermes 源码
-      - name: Checkout Hermes Source Code
+      - name: Checkout Hermes
         uses: actions/checkout@v4
         with:
           repository: facebook/hermes
-          ref: ${{ steps.get_tag.outputs.tag }}
-          path: hermes
+          # 获取最新 release tag
+          ref: ${{ steps.latest_release.outputs.tag_name }}
 
-      # 5. 配置 MT / MD 运行时参数
-      - name: Configure CRT and Build Parameters
-        id: cmake_config
-        shell: pwsh
+      - name: Get latest release tag
+        id: latest_release
+        shell: bash
         run: |
-          $crt = "${{ inputs.crt_type }}"
-          $buildType = "${{ inputs.build_type }}"
+          tag=$(curl -s https://api.github.com/repos/facebook/hermes/releases/latest | jq -r .tag_name)
+          echo "tag_name=$tag" >> $GITHUB_OUTPUT
 
-          if ($crt -eq "MT") {
-            if ($buildType -eq "Debug") {
-              $msvcRuntime = "MultiThreadedDebug"
-            } else {
-              $msvcRuntime = "MultiThreaded"
-            }
-          } else {
-            if ($buildType -eq "Debug") {
-              $msvcRuntime = "MultiThreadedDebugDLL"
-            } else {
-              $msvcRuntime = "MultiThreadedDLL"
-            }
-          }
+      - name: Setup Visual Studio
+        uses: egor-tensin/vs-shell@v2
+        with:
+          arch: x64
 
-          Write-Host "Configured CMAKE_MSVC_RUNTIME_LIBRARY: $msvcRuntime"
-          echo "msvc_runtime=$msvcRuntime" >> $env:GITHUB_OUTPUT
-
-      # 6. CMake 配置 (使用系统自带的 Ninja)
-      - name: CMake Configure
-        shell: pwsh
+      - name: Configure CMake
+        shell: bash
         run: |
-          cmake -B hermes/build -S hermes `
-            -G "Ninja" `
-            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} `
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=${{ steps.cmake_config.outputs.msvc_runtime }} `
-            -DCMAKE_INSTALL_PREFIX=hermes-dist
+          # 根据 configuration 和 runtime 组合确定 MSVC_RUNTIME_LIBRARY 值
+          # Release + MT → MultiThreaded, Debug + MT → MultiThreadedDebug
+          # Release + MD → MultiThreadedDLL, Debug + MD → MultiThreadedDebugDLL
+          if [[ "${{ github.event.inputs.configuration }}" == "Release" ]]; then
+            if [[ "${{ github.event.inputs.runtime }}" == "MT" ]]; then
+              RUNTIME="MultiThreaded"
+            else
+              RUNTIME="MultiThreadedDLL"
+            fi
+          else
+            if [[ "${{ github.event.inputs.runtime }}" == "MT" ]]; then
+              RUNTIME="MultiThreadedDebug"
+            else
+              RUNTIME="MultiThreadedDebugDLL"
+            fi
+          fi
 
-      # 7. 编译
-      - name: CMake Build
-        shell: pwsh
-        run: |
-          cmake --build hermes/build --config ${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS
+          # BUILD_SHARED_LIBS: ON → Shared, OFF → Static
+          if [[ "${{ github.event.inputs.library_type }}" == "Shared" ]]; then
+            SHARED_LIBS="ON"
+          else
+            SHARED_LIBS="OFF"
+          fi
 
-      # 8. 收集产物到 hermes-dist 目录
-      - name: Staging Artifacts (Install)
-        shell: pwsh
-        run: |
-          cmake --install hermes/build --config ${{ inputs.build_type }}
+          # 极简编译选项：关闭非必要功能以减小体积和加快编译
+          # - HERMES_ENABLE_DEBUGGER=OFF：关闭调试器支持[reference:0]
+          # - HERMES_ENABLE_INTL=OFF：关闭国际化支持，减少体积[reference:1]
+          # - HERMES_ENABLE_PROFILER=OFF：关闭性能分析器[reference:2]
+          # - HERMES_ENABLE_LIBFUZZER=OFF：关闭模糊测试[reference:3]
+          cmake -S hermes -B build \
+            -G "Visual Studio 17 2022" -A x64 \
+            -DCMAKE_BUILD_TYPE=${{ github.event.inputs.configuration }} \
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="$RUNTIME" \
+            -DBUILD_SHARED_LIBS="$SHARED_LIBS" \
+            -DHERMES_ENABLE_DEBUGGER=OFF \
+            -DHERMES_ENABLE_INTL=OFF \
+            -DHERMES_ENABLE_PROFILER=OFF \
+            -DHERMES_ENABLE_LIBFUZZER=OFF
 
-      # 9. 上传 Artifact 压缩包
-      - name: Upload Artifact
+      - name: Build Hermes
+        run: cmake --build ./build --config ${{ github.event.inputs.configuration }} --parallel
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Hermes-${{ steps.get_tag.outputs.tag }}-MSVC-${{ inputs.crt_type }}-${{ inputs.build_type }}-x64
-          path: hermes-dist/
-          if-no-files-found: error
+          name: hermes-windows-${{ github.event.inputs.configuration }}-${{ github.event.inputs.runtime }}-${{ github.event.inputs.library_type }}
+          path: |
+            build/bin/*.exe
+            build/*.lib
+            build/*.dll
+            build/*.pdb
+          if-no-files-found: warn

@@ -31,7 +31,7 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      # 1. 先获取最新的 release tag（不需要克隆代码）
+      # 1. 获取最新 release tag（在 checkout 之前）
       - name: Get latest release tag
         id: latest_release
         shell: bash
@@ -39,25 +39,28 @@ jobs:
           tag=$(curl -s https://api.github.com/repos/facebook/hermes/releases/latest | jq -r .tag_name)
           echo "tag_name=$tag" >> $GITHUB_OUTPUT
 
-      # 2. 用获取到的 tag 检出 Hermes 源码到 hermes/ 子目录
+      # 2. 检出 Hermes 源码到 hermes/ 子目录
       - name: Checkout Hermes source
         uses: actions/checkout@v4
         with:
           repository: facebook/hermes
           ref: ${{ steps.latest_release.outputs.tag_name }}
-          path: hermes   # 关键：防止覆盖工作目录
+          path: hermes
 
-      # 3. 配置 Visual Studio 环境
+      # 3. 配置 Visual Studio 环境（x64）
       - name: Setup Visual Studio
         uses: egor-tensin/vs-shell@v2
         with:
           arch: x64
 
-      # 4. CMake 配置（极简编译，全部参考官方参数）
+      # 4. 清理旧构建目录 + CMake 配置（极简 + 修复 MSVC 编译问题）
       - name: Configure CMake
         shell: bash
         run: |
-          # 根据 runtime 和 configuration 计算 MSVC_RUNTIME_LIBRARY 值
+          # 强制清理缓存，避免旧配置残留
+          rm -rf ./build
+
+          # 根据 runtime 和 configuration 计算 MSVC_RUNTIME_LIBRARY
           if [[ "${{ github.event.inputs.configuration }}" == "Release" ]]; then
             if [[ "${{ github.event.inputs.runtime }}" == "MT" ]]; then
               RUNTIME="MultiThreaded"
@@ -79,7 +82,7 @@ jobs:
             SHARED="OFF"
           fi
 
-          # 极简编译：关闭调试器、国际化、分析器、模糊测试（都是官方 CMake 选项）
+          # CMake 配置
           cmake -S ./hermes -B ./build \
             -G "Visual Studio 17 2022" -A x64 \
             -DCMAKE_BUILD_TYPE=${{ github.event.inputs.configuration }} \
@@ -93,7 +96,7 @@ jobs:
             -DHERMES_ENABLE_PROFILER=OFF \
             -DHERMES_ENABLE_LIBFUZZER=OFF
 
-      # 5. 编译（多核并行）
+      # 5. 编译（并行）
       - name: Build Hermes
         run: cmake --build ./build --config ${{ github.event.inputs.configuration }} --parallel
 

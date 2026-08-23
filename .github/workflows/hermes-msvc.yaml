@@ -28,23 +28,19 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1. 初始化 MSVC 编译环境 (解决找不到 Visual Studio 的问题)
+      # 1. 初始化 MSVC (cl.exe) 编译环境
       - name: Setup MSVC Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # 2. 锁定 CMake 版本为 3.29.x (解决 CMake 3.30+ 报 CMP0026 的问题)
+      # 2. 锁定 CMake 版本为 3.29.x，防止 3.30+ 报 CMP0026 致命错误
       - name: Setup CMake
         uses: jwlawson/actions-setup-cmake@v2
         with:
           cmake-version: '3.29.x'
 
-      # 3. 安装 Hermes 官方推荐的 Ninja 构建工具
-      - name: Setup Ninja
-        uses: cmake/setup-ninja@v3
-
-      # 4. 获取最新 Hermes Release Tag
+      # 3. 获取最新 Hermes Release Tag
       - name: Fetch Latest Hermes Release Tag
         id: get_tag
         shell: pwsh
@@ -66,7 +62,7 @@ jobs:
           Write-Host "Target Hermes Tag: $tag"
           echo "tag=$tag" >> $env:GITHUB_OUTPUT
 
-      # 5. Checkout Hermes 源码
+      # 4. Checkout Hermes 源码
       - name: Checkout Hermes Source Code
         uses: actions/checkout@v4
         with:
@@ -74,7 +70,7 @@ jobs:
           ref: ${{ steps.get_tag.outputs.tag }}
           path: hermes
 
-      # 6. 配置 MT / MD 运行时
+      # 5. 配置 MT / MD 运行时参数
       - name: Configure CRT and Build Parameters
         id: cmake_config
         shell: pwsh
@@ -99,7 +95,7 @@ jobs:
           Write-Host "Configured CMAKE_MSVC_RUNTIME_LIBRARY: $msvcRuntime"
           echo "msvc_runtime=$msvcRuntime" >> $env:GITHUB_OUTPUT
 
-      # 7. 执行 CMake 配置 (改用 Ninja)
+      # 6. CMake 配置 (使用系统自带的 Ninja)
       - name: CMake Configure
         shell: pwsh
         run: |
@@ -109,19 +105,19 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=${{ steps.cmake_config.outputs.msvc_runtime }} `
             -DCMAKE_INSTALL_PREFIX=hermes-dist
 
-      # 8. 编译
+      # 7. 编译
       - name: CMake Build
         shell: pwsh
         run: |
           cmake --build hermes/build --config ${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS
 
-      # 9. 归集产物到 hermes-dist 目录
+      # 8. 收集产物到 hermes-dist 目录
       - name: Staging Artifacts (Install)
         shell: pwsh
         run: |
           cmake --install hermes/build --config ${{ inputs.build_type }}
 
-      # 10. 上传产物 Zip
+      # 9. 上传 Artifact 压缩包
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:

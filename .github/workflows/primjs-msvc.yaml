@@ -3,6 +3,10 @@ name: Build PrimJS (Windows MSVC)
 on:
   workflow_dispatch:
     inputs:
+      repo:
+        description: 'PrimJS 仓库路径 (owner/repo)'
+        required: true
+        default: 'lynx-dev/primjs'
       crt_type:
         description: '选择 C++ 运行时库 (CRT Type)'
         required: true
@@ -19,54 +23,52 @@ jobs:
     steps:
       - name: Fetch Latest PrimJS Release Source
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.event.inputs.repo }}
         run: |
-          # 替换为您实际的仓库名称 (例如 lynx-dev/primjs)
-          $REPO = "lynx-dev/primjs"
+          Write-Host "Fetching latest release from $env:TARGET_REPO using GitHub CLI..."
           
-          Write-Host "Fetching latest release information for $REPO..."
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest"
-          $zipUrl = $release.zipball_url
-          $tagName = $release.tag_name
-          
+          # 1. 获取最新 Release 的 Tag 名称
+          $tagName = gh release view --repo $env:TARGET_REPO --json tagName --jq .tagName
+          if (-not $tagName) {
+            Write-Error "Failed to fetch latest release tag. Please check if the repository exists and has a release."
+            exit 1
+          }
           Write-Host "Latest Release Tag: $tagName"
-          Write-Host "Downloading source from: $zipUrl"
           
-          Invoke-WebRequest -Uri $zipUrl -OutFile "primjs-src.zip"
+          # 2. 下载源码 Zip 包
+          gh release download $tagName --repo $env:TARGET_REPO --archive=zip --output "primjs-src.zip"
+          
+          # 3. 解压并整理源码至 src 目录
           Expand-Archive -Path "primjs-src.zip" -DestinationPath "primjs-temp"
+          $extractedDir = Get-ChildItem -Path "primjs-temp" | Where-Object { $_.PSIsContainer } | Select-Object -First 1
           
-          # 解压出来的子目录名称包含 Commit Hash，将其统一整理至 src 文件夹
-          $extractedDir = Get-ChildItem -Path "primjs-temp" | Select-Object -First 1
+          New-Item -ItemType Directory -Path "src" -Force
           Move-Item -Path "$($extractedDir.FullName)\*" -Destination "src" -Force
           Remove-Item -Path "primjs-temp", "primjs-src.zip" -Recurse -Force
           
-          # 存入环境变量供后续步骤使用
-          echo "RELEASE_TAG=$tagName" >> $env:GITHUB_ENV
-
-      - name: Setup MSVC Developer Command Prompt
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Setup Ninja
-        uses: xmake-io/github-action-setup-ninja@v1
+          # 4. 写入环境变量供后续 Step 读取
+          "RELEASE_TAG=$tagName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Configure CMake
         shell: pwsh
         run: |
           $crtChoice = "${{ github.event.inputs.crt_type }}"
           
-          # CMake 3.15+ 使用 CMAKE_MSVC_RUNTIME_LIBRARY 控制 MT / MD
+          # MT 映射为 MultiThreaded，MD 映射为 MultiThreadedDLL
           if ($crtChoice -eq "MT") {
-            $msvcCrt = "MultiThreaded$<$<CONFIG:Release>:>"
+            $msvcCrt = "MultiThreaded"
           } else {
-            $msvcCrt = "MultiThreadedDLL$<$<CONFIG:Release>:>"
+            $msvcCrt = "MultiThreadedDLL"
           }
 
-          Write-Host "Building with MSVC CRT: $msvcCrt"
+          Write-Host "Configuring CMake with MSVC Runtime: $msvcCrt"
           
+          # 直接使用 Windows Runner 内置的 Visual Studio 2022 生成器 (无需额外配置 Ninja)
           cmake -B build -S src `
-            -G "Ninja" `
-            -DCMAKE_BUILD_TYPE=Release `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=$msvcCrt
 
       - name: Build PrimJS
@@ -79,9 +81,7 @@ jobs:
         with:
           name: primjs-${{ env.RELEASE_TAG }}-windows-x64-${{ github.event.inputs.crt_type }}
           path: |
-            build/*.exe
-            build/*.dll
-            build/*.lib
-            build/Release/*.exe
-            build/Release/*.dll
-            build/Release/*.lib
+            build/**/*.exe
+            build/**/*.dll
+            build/**/*.lib
+          if-no-files-found: warn

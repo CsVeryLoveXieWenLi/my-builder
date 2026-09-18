@@ -1,0 +1,157 @@
+name: Build with Nuitka
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: '源码压缩包 URL'
+        required: true
+        type: string
+      entry_file:
+        description: '主入口源码文件全名（如 main.py）'
+        required: true
+        type: string
+      target_os:
+        description: '编译系统（win 或 linux）'
+        required: true
+        type: choice
+        options:
+          - win
+          - linux
+
+jobs:
+  build-windows:
+    if: github.event.inputs.target_os == 'win'
+    runs-on: windows-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Create virtual environment
+        run: python -m venv venv
+
+      - name: Install Nuitka in venv
+        run: |
+          .\venv\Scripts\python -m pip install --upgrade pip
+          .\venv\Scripts\pip install nuitka
+
+      - name: Download and extract source
+        shell: pwsh
+        run: |
+          $url = "${{ github.event.inputs.source_url }}"
+          $entry = "${{ github.event.inputs.entry_file }}"
+          New-Item -ItemType Directory -Force -Path source | Out-Null
+          Set-Location source
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri $url -OutFile archive
+
+          # 优先使用 7z 自动识别压缩格式
+          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if ($sevenZip) {
+            & $sevenZip x archive -y | Out-Null
+          } else {
+            # 回退：根据 URL 扩展名判断
+            if ($url -match '\.zip$') { Expand-Archive -Path archive -DestinationPath . -Force }
+            elseif ($url -match '\.tar\.gz$|\.tgz$') { tar -xzf archive }
+            elseif ($url -match '\.tar\.bz2$') { tar -xjf archive }
+            elseif ($url -match '\.tar\.xz$') { tar -xJf archive }
+            elseif ($url -match '\.tar$') { tar -xf archive }
+            else { throw "无法识别的压缩格式" }
+          }
+
+          if (-not (Test-Path $entry)) {
+            throw "入口文件 $entry 不存在，请确保压缩包直接解压到当前目录，没有嵌套文件夹。"
+          }
+
+      - name: Install requirements in venv
+        shell: pwsh
+        run: |
+          if (Test-Path source\requirements.txt) {
+            .\venv\Scripts\pip install -r source\requirements.txt
+          }
+
+      - name: Build with Nuitka
+        working-directory: source
+        run: |
+          ..\venv\Scripts\python -m nuitka --onefile --mingw64 --assume-yes-for-downloads --output-dir=dist "${{ github.event.inputs.entry_file }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: source/dist/*
+          if-no-files-found: error
+
+  build-linux:
+    if: github.event.inputs.target_os == 'linux'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc python3-dev patchelf unzip
+
+      - name: Create virtual environment
+        run: python -m venv venv
+
+      - name: Install Nuitka in venv
+        run: |
+          ./venv/bin/pip install --upgrade pip
+          ./venv/bin/pip install nuitka
+
+      - name: Download and extract source
+        run: |
+          url="${{ github.event.inputs.source_url }}"
+          entry="${{ github.event.inputs.entry_file }}"
+          mkdir -p source
+          cd source
+          curl -L "$url" -o archive
+
+          # 自动判断压缩格式
+          file_type=$(file -b --mime-type archive)
+          case "$file_type" in
+            application/zip) unzip -o archive ;;
+            application/gzip|application/x-gzip) tar -xzf archive ;;
+            application/x-bzip2|application/bzip2) tar -xjf archive ;;
+            application/x-xz) tar -xJf archive ;;
+            application/x-tar) tar -xf archive ;;
+            *)
+              if command -v 7z >/dev/null; then
+                7z x archive -y
+              else
+                echo "未知压缩格式: $file_type"
+                exit 1
+              fi
+              ;;
+          esac
+
+          if [ ! -f "$entry" ]; then
+            echo "入口文件 $entry 不存在，请确保压缩包直接解压到当前目录，没有嵌套文件夹。"
+            exit 1
+          fi
+
+      - name: Install requirements in venv
+        run: |
+          if [ -f source/requirements.txt ]; then
+            ./venv/bin/pip install -r source/requirements.txt
+          fi
+
+      - name: Build with Nuitka
+        working-directory: source
+        run: |
+          ../venv/bin/python -m nuitka --onefile --output-dir=dist "${{ github.event.inputs.entry_file }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: source/dist/*
+          if-no-files-found: error
